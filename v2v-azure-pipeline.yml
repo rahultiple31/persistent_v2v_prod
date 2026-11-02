@@ -1,0 +1,461 @@
+trigger: none
+pr: none
+
+parameters:
+  - name: targetModule
+    displayName: Target module or deployment group
+    type: string
+    default: connect
+    values:
+      - connect
+      - lambda_security_groups
+      - lambda_endpoint_associations
+      - lambda
+      - v2v
+      - dynamodb
+      - btsgsd-intent-kb
+      - code-signing
+      - signing_profile
+      - code_signing_config
+      - connect-resources
+      - connect_external_vms
+      - connect_us_east_1
+      - btsgsd-Main-IB-Flow
+      - connect_views
+      - abbvie_views
+      # Deploy all six dedicated flow modules together, or select one below.
+      - all-flows
+      - BTSGSD-V2V-US-AIAgent-SurveyFlow
+      - BTSGSD-V2V-US-AgentToAgentTransferFlow
+      - BTSGSD-V2V-US-OutboundWhisperFlow
+      - BTSGSD-V2V-US-CustomerQueueFlow
+      - BTSGSD-V2V-US-Views
+      - BTSGSD-V2V-US-stdgsd_Fieldforce_Flow
+      - BTSGSD-V2V-US-Transfer-To-Agent-CustomerQueueFlow
+      - BTSGSD-V2V-US-VoicemailFlow
+      - BTSGSD-V2V-US-btsgsd_HR
+      - BTSGSD-V2V-US-placeholder-inbound-flow
+      - BTSGSD-V2V-US-transfer-to-agent-customer-queue-flow
+      - BTSGSD-V2V-US-outbound-whisper-flow
+      - BTSGSD-V2V-US-agent-to-agent-transfer-flow
+      - BTSGSD-V2V-US-HR
+      - connect_queue
+      - BTSGSD-V2V-US-CustomerNumberDataTable
+      - BTSGSD-V2V-US-BTSGSD-CustomerNumber
+      - BTSGSD-V2V-US-BTSGSD-HR_Transfer
+      - BTSGSD-V2V-US-PROMPT-DATATABLE
+      - BTSGSD-V2V-US-BTSGSD-Veeva_Transfer
+      - BTSGSD-V2V-US-TopLevelBlockerMessage
+      - btsgsd_support_agent
+      - btsgsd_support_agent_tools_access
+      - btsgsd_ai_survey_agent
+      - destroy_survey_ai
+      - destroy_survey_lex
+      - agentcore_gateway
+      - connect_Integrations
+      - lambda_us_east_1
+      - lambda-ctr-survey
+      - lambda-connect-daily-ctr-export
+      - lambda-connect-daily-ctr-consolidation
+      - destroy_ctr_raw
+      - BTSGSD-V2V-US-SNOW
+      - BTSGSD-V2V-US-ServiceNow_Interaction
+      - BTSGSD-V2V-US-Nextthink_Handoff
+      - BTSGSD-V2V-US-UpdateSessionAttributes
+      - silence_guard-dev
+      - conversion_of_queue_metrics
+      # VMX3 voicemail stack in the connect state; create-only (no deletions).
+      - voicemail
+      - lex_queueflow_callback
+      - lex_yesno
+      - BTSGSD-V2V-US-lex-QueueFlow-Callback
+      - BTSGSD-V2V-US-lex-yesNo
+      - iam-ctr
+      - s3_connect_reporting
+      - s3_intent_kb
+      - secrets_manager
+      - queue_info_dynamodb
+      - cloudwatch_log_group
+      - lex_yesno_log_group
+      - lex_bot
+      - lex_yesno_bot
+      - lex_customer_queue_flow_bot
+      - s3_v2v
+      - cloudfront_v2v
+      - cognito_v2v
+      - iam_v2v
+      - ssm_v2v
+      # environments/v2v-resources-dev uses v2v-resource-modules.
+      - all
+      - cloudwatch
+      - ssm
+      - ecr
+      - iam
+      - networking
+      - alb
+      - waf
+      - ecs
+      - dns
+
+  - name: terraformAction
+    displayName: Terraform action
+    type: string
+    default: plan
+    values:
+      - plan
+      - apply
+
+  - name: targetEnvironment
+    displayName: Target environment
+    type: string
+    default: v2v-dev
+    values:
+      - v2v-dev
+      - v2v-resources-dev
+
+# Set AWS_DEV_OIDC_ROLE_ARN in this pipeline's Edit > Variables settings.
+# Use the same IAM role ARN as dev and select "Keep this value secret".
+# Both Terraform tasks map the secret through env; keep its value out of YAML.
+variables:
+  terraformVersion: '1.10.5'
+  deploymentRegion: 'us-east-1'
+  backendBucket: 'bts-cloud-terraform-tfstate'
+  backendRegion: 'us-east-1'
+
+  # Use the renamed Terraform folders while preserving existing state identities.
+  ${{ if eq(parameters.targetEnvironment, 'v2v-dev') }}:
+    workingDirectory: '$(Build.SourcesDirectory)/environments/v2v-dev'
+    deploymentEnvironment: v2v
+
+  ${{ if eq(parameters.targetEnvironment, 'v2v-resources-dev') }}:
+    workingDirectory: '$(Build.SourcesDirectory)/environments/v2v-resources-dev'
+    deploymentEnvironment: v2v-resources
+
+pool:
+  vmImage: ubuntu-latest
+
+# Dependencies in other Terraform states must already exist.
+# Saved plans may contain sensitive values; restrict pipeline artifact access.
+stages:
+  - stage: Plan
+    displayName: Terraform Plan
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+
+    jobs:
+      - job: terraform_plan
+        displayName: Plan ${{ parameters.targetModule }}
+
+        steps:
+          - checkout: self
+
+          - task: TerraformInstaller@1
+            displayName: Install Terraform
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - bash: |
+              set -euo pipefail
+              umask 077
+
+              AWS_ROLE_ARN="${AWS_DEV_OIDC_ROLE_ARN:-}"
+
+              if [ -z "$AWS_ROLE_ARN" ] || [[ "$AWS_ROLE_ARN" == \$\(* ]]; then
+                echo "##vso[task.logissue type=error]Set AWS_DEV_OIDC_ROLE_ARN in this V2V pipeline: Edit > Variables > New variable. Use the same IAM role ARN as dev and select Keep this value secret." >&2
+                exit 1
+              fi
+
+              export AWS_ROLE_ARN
+              export AWS_REGION="$DEPLOYMENT_REGION"
+              export AWS_DEFAULT_REGION="$DEPLOYMENT_REGION"
+              export AWS_PAGER="" AWS_CLI_AUTO_PROMPT=off TF_IN_AUTOMATION=true
+              export AWS_ROLE_SESSION_NAME="azure-pipelines-v2v-$BUILD_BUILDID"
+              export AWS_WEB_IDENTITY_TOKEN_FILE="$AGENT_TEMPDIRECTORY/aws-oidc-token"
+
+              trap 'rm -f -- "$AWS_WEB_IDENTITY_TOKEN_FILE"' EXIT
+
+              refresh_v2v_credentials() {
+                local OIDC_RESPONSE OIDC_TOKEN account
+
+                OIDC_RESPONSE="$(curl --fail --silent --show-error \
+                  -X POST \
+                  -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+                  -H "Content-Length: 0" \
+                  "${SYSTEM_OIDCREQUESTURI}?api-version=7.1-preview.1")"
+
+                OIDC_TOKEN="$(printf '%s' "$OIDC_RESPONSE" |
+                  python3 -c 'import json, sys; print(json.load(sys.stdin)["oidcToken"])')"
+
+                printf '%s' "$OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+                chmod 600 "$AWS_WEB_IDENTITY_TOKEN_FILE"
+
+                account="$(aws sts get-caller-identity --query Account --output text)"
+                [ "$account" = "$EXPECTED_ACCOUNT_ID" ] || {
+                  echo "Unexpected AWS account: $account" >&2
+                  return 1
+                }
+              }
+
+              if [ "$TARGET_ENVIRONMENT" = v2v ]; then
+                source "$BUILD_SOURCESDIRECTORY/scripts/terraform-target-v2v.sh" \
+                  "$TARGET_MODULE" "$TARGET_ENVIRONMENT" "$DEPLOYMENT_REGION"
+                TERRAFORM_VARIABLE_FILE="terraform.tfvars"
+              else
+                case "$TARGET_MODULE" in
+                  all) TERRAFORM_TARGET_ADDRESS="" ;;
+                  cloudwatch|ssm|ecr|iam|networking|alb|waf|ecs|dns)
+                    TERRAFORM_TARGET_ADDRESS="module.$TARGET_MODULE"
+                    ;;
+                  *)
+                    echo "Unsupported v2v-resources module: $TARGET_MODULE" >&2
+                    exit 1
+                    ;;
+                esac
+                # Preserve the existing resource root's shared backend key.
+                TERRAFORM_BACKEND_KEY="terraform-state/V2V-poc/terraform.tfstate"
+                TERRAFORM_VARIABLE_FILE="terraform.dev.tfvars"
+                TERRAFORM_PLAN_ARGS=(
+                  "-var-file=$TERRAFORM_VARIABLE_FILE"
+                  "-var=aws_region=$DEPLOYMENT_REGION"
+                )
+                if [ -n "$TERRAFORM_TARGET_ADDRESS" ]; then
+                  TERRAFORM_PLAN_ARGS+=("-target=$TERRAFORM_TARGET_ADDRESS")
+                fi
+              fi
+
+              mkdir -p "$PLAN_DIRECTORY"
+
+              plan_file="$PLAN_DIRECTORY/terraform.tfplan"
+              plan_lock="$PLAN_DIRECTORY/.terraform.lock.hcl"
+              plan_context="$PLAN_DIRECTORY/context.txt"
+
+              # Use the checked-in configuration, matching the dev pipeline.
+              test -s "$TERRAFORM_VARIABLE_FILE"
+
+              # Build file-based packages before Terraform evaluates their hashes.
+              # Retired survey module destruction does not deploy Lambda packages.
+              if [ "$TARGET_ENVIRONMENT" = v2v ] && [ "$TERRAFORM_DESTROY_ONLY" != true ]; then
+                python3 "$BUILD_SOURCESDIRECTORY/scripts/v2v-lambda-packages.py" build \
+                  --state-module "$TERRAFORM_STATE_MODULE"
+              fi
+
+              refresh_v2v_credentials
+
+              terraform init \
+                -input=false \
+                -reconfigure \
+                "-backend-config=bucket=$BACKEND_BUCKET" \
+                "-backend-config=key=$TERRAFORM_BACKEND_KEY" \
+                "-backend-config=region=$BACKEND_REGION" \
+                -backend-config=encrypt=true
+
+              terraform validate
+              if [ "$TARGET_ENVIRONMENT" = v2v ]; then
+                preserve_v2v_target_outputs
+              fi
+              refresh_v2v_credentials
+
+              # V2V auto-loads terraform.tfvars; resources use -var-file.
+              terraform plan \
+                -input=false \
+                -no-color \
+                "${TERRAFORM_PLAN_ARGS[@]}" \
+                -out="$plan_file"
+
+              if [ "$TARGET_ENVIRONMENT" = v2v ]; then
+                validate_v2v_target_plan "$plan_file"
+              fi
+
+              # Include provider-generated ZIPs for standalone Lambdas as well.
+              if [ "$TARGET_ENVIRONMENT" = v2v ] && [ "$TERRAFORM_DESTROY_ONLY" != true ]; then
+                python3 "$BUILD_SOURCESDIRECTORY/scripts/v2v-lambda-packages.py" save \
+                  --artifact-directory "$PLAN_DIRECTORY"
+              fi
+
+              cp .terraform.lock.hcl "$plan_lock"
+              printf '%s\n' \
+                "$BUILD_SOURCEVERSION" "$TARGET_ENVIRONMENT" "$DEPLOYMENT_REGION" "$TERRAFORM_BACKEND_KEY" "$TARGET_MODULE" \
+                > "$plan_context"
+            displayName: Terraform Init, Validate, and Plan
+            workingDirectory: $(workingDirectory)
+            env:
+              TARGET_ENVIRONMENT: ${{ variables.deploymentEnvironment }}
+              TARGET_MODULE: ${{ parameters.targetModule }}
+              DEPLOYMENT_REGION: $(deploymentRegion)
+              BACKEND_BUCKET: $(backendBucket)
+              BACKEND_REGION: $(backendRegion)
+              PLAN_DIRECTORY: $(Pipeline.Workspace)/v2v-plan
+              EXPECTED_ACCOUNT_ID: '518902362956'
+              AWS_DEV_OIDC_ROLE_ARN: $(AWS_DEV_OIDC_ROLE_ARN)
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+              SYSTEM_OIDCREQUESTURI: $(System.OidcRequestUri)
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish saved Terraform plan
+            inputs:
+              targetPath: '$(Pipeline.Workspace)/v2v-plan'
+              artifact: v2v-terraform-plan
+
+  - stage: Apply
+    displayName: Terraform Apply
+    dependsOn: Plan
+    condition: |
+      and(
+        succeeded(),
+        eq('${{ parameters.terraformAction }}', 'apply'),
+        eq(variables['Build.SourceBranch'], 'refs/heads/main')
+      )
+
+    jobs:
+      - job: terraform_apply
+        displayName: Apply ${{ parameters.targetModule }}
+
+        steps:
+          - checkout: self
+
+          - task: TerraformInstaller@1
+            displayName: Install Terraform
+            inputs:
+              terraformVersion: $(terraformVersion)
+
+          - task: DownloadPipelineArtifact@2
+            displayName: Download saved Terraform plan
+            inputs:
+              buildType: current
+              artifactName: v2v-terraform-plan
+              targetPath: '$(Pipeline.Workspace)/v2v-plan'
+
+          - bash: |
+              set -euo pipefail
+              umask 077
+
+              AWS_ROLE_ARN="${AWS_DEV_OIDC_ROLE_ARN:-}"
+
+              if [ -z "$AWS_ROLE_ARN" ] || [[ "$AWS_ROLE_ARN" == \$\(* ]]; then
+                echo "##vso[task.logissue type=error]Set AWS_DEV_OIDC_ROLE_ARN in this V2V pipeline: Edit > Variables > New variable. Use the same IAM role ARN as dev and select Keep this value secret." >&2
+                exit 1
+              fi
+
+              export AWS_ROLE_ARN
+              export AWS_REGION="$DEPLOYMENT_REGION"
+              export AWS_DEFAULT_REGION="$DEPLOYMENT_REGION"
+              export AWS_PAGER="" AWS_CLI_AUTO_PROMPT=off TF_IN_AUTOMATION=true
+              export AWS_ROLE_SESSION_NAME="azure-pipelines-v2v-$BUILD_BUILDID"
+              export AWS_WEB_IDENTITY_TOKEN_FILE="$AGENT_TEMPDIRECTORY/aws-oidc-token"
+
+              trap 'rm -f -- "$AWS_WEB_IDENTITY_TOKEN_FILE"' EXIT
+
+              refresh_v2v_credentials() {
+                local OIDC_RESPONSE OIDC_TOKEN account
+
+                OIDC_RESPONSE="$(curl --fail --silent --show-error \
+                  -X POST \
+                  -H "Authorization: Bearer ${SYSTEM_ACCESSTOKEN}" \
+                  -H "Content-Length: 0" \
+                  "${SYSTEM_OIDCREQUESTURI}?api-version=7.1-preview.1")"
+
+                OIDC_TOKEN="$(printf '%s' "$OIDC_RESPONSE" |
+                  python3 -c 'import json, sys; print(json.load(sys.stdin)["oidcToken"])')"
+
+                printf '%s' "$OIDC_TOKEN" > "$AWS_WEB_IDENTITY_TOKEN_FILE"
+                chmod 600 "$AWS_WEB_IDENTITY_TOKEN_FILE"
+
+                account="$(aws sts get-caller-identity --query Account --output text)"
+                [ "$account" = "$EXPECTED_ACCOUNT_ID" ] || {
+                  echo "Unexpected AWS account: $account" >&2
+                  return 1
+                }
+              }
+
+              if [ "$TARGET_ENVIRONMENT" = v2v ]; then
+                source "$BUILD_SOURCESDIRECTORY/scripts/terraform-target-v2v.sh" \
+                  "$TARGET_MODULE" "$TARGET_ENVIRONMENT" "$DEPLOYMENT_REGION"
+                TERRAFORM_VARIABLE_FILE="terraform.tfvars"
+              else
+                case "$TARGET_MODULE" in
+                  all) TERRAFORM_TARGET_ADDRESS="" ;;
+                  cloudwatch|ssm|ecr|iam|networking|alb|waf|ecs|dns)
+                    TERRAFORM_TARGET_ADDRESS="module.$TARGET_MODULE"
+                    ;;
+                  *)
+                    echo "Unsupported v2v-resources module: $TARGET_MODULE" >&2
+                    exit 1
+                    ;;
+                esac
+                # Preserve the existing resource root's shared backend key.
+                TERRAFORM_BACKEND_KEY="terraform-state/V2V-poc/terraform.tfstate"
+                TERRAFORM_VARIABLE_FILE="terraform.dev.tfvars"
+                TERRAFORM_PLAN_ARGS=(
+                  "-var-file=$TERRAFORM_VARIABLE_FILE"
+                  "-var=aws_region=$DEPLOYMENT_REGION"
+                )
+                if [ -n "$TERRAFORM_TARGET_ADDRESS" ]; then
+                  TERRAFORM_PLAN_ARGS+=("-target=$TERRAFORM_TARGET_ADDRESS")
+                fi
+              fi
+
+              plan_file="$PLAN_DIRECTORY/terraform.tfplan"
+              plan_lock="$PLAN_DIRECTORY/.terraform.lock.hcl"
+              plan_context="$PLAN_DIRECTORY/context.txt"
+
+              test -s "$plan_file"
+              test -s "$plan_lock"
+              test -s "$plan_context"
+
+              expected_context="$(printf '%s\n' \
+                "$BUILD_SOURCEVERSION" "$TARGET_ENVIRONMENT" "$DEPLOYMENT_REGION" "$TERRAFORM_BACKEND_KEY" "$TARGET_MODULE")"
+
+              [ "$(cat "$plan_context")" = "$expected_context" ] || {
+                echo "Saved plan does not match the selected commit, environment, region, state or module choice." >&2
+                exit 1
+              }
+
+              cp "$plan_lock" .terraform.lock.hcl
+
+              if [ "$TARGET_ENVIRONMENT" = v2v ] && [ "$TERRAFORM_DESTROY_ONLY" != true ]; then
+                python3 "$BUILD_SOURCESDIRECTORY/scripts/v2v-lambda-packages.py" restore \
+                  --artifact-directory "$PLAN_DIRECTORY"
+              fi
+
+              refresh_v2v_credentials
+
+              terraform init \
+                -input=false \
+                -reconfigure \
+                -lockfile=readonly \
+                "-backend-config=bucket=$BACKEND_BUCKET" \
+                "-backend-config=key=$TERRAFORM_BACKEND_KEY" \
+                "-backend-config=region=$BACKEND_REGION" \
+                -backend-config=encrypt=true
+
+              terraform validate
+              if [ "$TARGET_ENVIRONMENT" = v2v ]; then
+                validate_v2v_target_plan "$plan_file"
+              fi
+              refresh_v2v_credentials
+
+              # Apply executes the saved plan from this run's Plan stage.
+              terraform apply -input=false -no-color "$plan_file"
+
+              if [ "$TARGET_ENVIRONMENT" = v2v ] && \
+                 { [ "$TARGET_MODULE" = btsgsd_support_agent ] || [ "$TARGET_MODULE" = connect ]; }; then
+                refresh_v2v_credentials
+                python3 "$BUILD_SOURCESDIRECTORY/scripts/verify_v2v_support_agent_tools.py" \
+                  --region "$DEPLOYMENT_REGION" \
+                  --stack-name BTSGSD-V2V-US-SupportAgent
+              fi
+            displayName: Terraform Apply
+            workingDirectory: $(workingDirectory)
+            env:
+              TARGET_ENVIRONMENT: ${{ variables.deploymentEnvironment }}
+              TARGET_MODULE: ${{ parameters.targetModule }}
+              DEPLOYMENT_REGION: $(deploymentRegion)
+              BACKEND_BUCKET: $(backendBucket)
+              BACKEND_REGION: $(backendRegion)
+              PLAN_DIRECTORY: $(Pipeline.Workspace)/v2v-plan
+              EXPECTED_ACCOUNT_ID: '518902362956'
+              AWS_DEV_OIDC_ROLE_ARN: $(AWS_DEV_OIDC_ROLE_ARN)
+              SYSTEM_ACCESSTOKEN: $(System.AccessToken)
+              SYSTEM_OIDCREQUESTURI: $(System.OidcRequestUri)
+
+# After initial gateway creation, run a new Plan/Apply cycle if its audience
+# needs updating. Apply only executes the saved plan from its own Plan stage.
